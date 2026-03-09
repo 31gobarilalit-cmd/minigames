@@ -54,7 +54,7 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('lobby:updated', _lobbyPayload(lobby, game));
     socket.emit('lobby:joined', { roomId, playerId: socket.id });
 
-    if (lobby.players.length >= game.maxPlayers) _startGame(roomId, gameId);
+    if (lobby.players.length >= game.minPlayers) _startGame(roomId, gameId);
   });
 
   /* ── Create private room ── */
@@ -90,7 +90,7 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('lobby:updated', _lobbyPayload(updated, game));
     socket.emit('lobby:joined', { roomId, playerId: socket.id });
 
-    if (updated.players.length >= lobby.maxPlayers) _startGame(roomId, lobby.gameId);
+    if (updated.players.length >= game.minPlayers) _startGame(roomId, lobby.gameId);
   });
 
   /* ── Toggle ready ── */
@@ -103,7 +103,7 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('lobby:updated', _lobbyPayload(lobby, game));
 
     const allReady = lobby.players.every(p => p.ready);
-    if (allReady && lobby.players.length >= lobby.maxPlayers) _startGame(roomId, lobby.gameId);
+    if (allReady && lobby.players.length >= game.minPlayers) _startGame(roomId, lobby.gameId);
   });
 
   /* ── Game move ── */
@@ -186,4 +186,5 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`\n🎮  Mini Games running → http://localhost:${PORT}\n`);
 });
+
 
