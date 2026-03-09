@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Game — Mini Games</title>
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/game.css">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="index.html" class="back-btn">← Home</a>
+      <div class="logo"><span class="logo-icon">🎮</span><span class="logo-text" id="gameNameHeader">GAME</span></div>
+      <button class="btn-sm" id="btnRestart">↺ Restart</button>
+    </div>
+  </header>
+
+  <!-- ── Game Over Overlay ── -->
+  <div id="gameOverlay" class="game-overlay hidden">
+    <div class="overlay-box">
+      <div class="overlay-emoji" id="overlayEmoji">🏆</div>
+      <h2 class="overlay-title" id="overlayTitle">Game Over</h2>
+      <p class="overlay-sub" id="overlaySub"></p>
+      <button class="btn-primary" id="overlayRestart">Play Again</button>
+      <a href="index.html" class="btn-ghost" style="margin-top:10px;display:block;text-align:center">Home</a>
+    </div>
+  </div>
+
+  <!-- ── Disconnected Overlay ── -->
+  <div id="disconnectOverlay" class="game-overlay hidden">
+    <div class="overlay-box">
+      <div class="overlay-emoji">😢</div>
+      <h2 class="overlay-title">Player Disconnected</h2>
+      <p class="overlay-sub">A player left the game.</p>
+      <a href="index.html" class="btn-primary">Back to Home</a>
+    </div>
+  </div>
+
+  <!-- ── Status Bar ── -->
+  <div class="status-bar">
+    <div class="status-players" id="statusPlayers"></div>
+    <div class="status-turn" id="statusTurn"></div>
+  </div>
+
+  <!-- ── Game Container ── -->
+  <div class="game-wrap" id="gameWrap">
+    <!-- Injected by game-specific JS -->
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- Game scripts loaded dynamically -->
+  <script src="js/gameClient.js"></script>
+</body>
+</html>

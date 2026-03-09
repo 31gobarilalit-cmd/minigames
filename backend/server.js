@@ -23,7 +23,7 @@ const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST']
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ── REST API ──────────────────────────────────────────────────
 app.get('/api/games',       (_req, res) => res.json(gameRegistry.getAllGames()));
@@ -186,3 +186,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`\n🎮  Mini Games running → http://localhost:${PORT}\n`);
 });
+
