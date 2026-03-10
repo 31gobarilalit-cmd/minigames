@@ -74,14 +74,23 @@ socket.on('game:state_update', (state) => {
 
 socket.on('game:over', ({ winner, state }) => {
   if (renderer) renderer.update(state);
-  const winnerPlayer = (session.players || []).find(p => p.id === winner);
-  const isMe = winner === session.playerId;
-  showOverlay(
-    isMe ? '🏆' : '😢',
-    isMe ? 'YOU WIN!' : (winnerPlayer ? `${winnerPlayer.nickname} WINS!` : 'GAME OVER'),
-    isMe ? 'Congratulations!' : 'Better luck next time!'
-  );
-  playSound(isMe ? 'win' : 'lose');
+  // Check team win
+  const teamWinners = ['loyalists','conspirators','traitor','civilians'];
+  if (teamWinners.includes(winner)) {
+    const myRole = state?.myRole;
+    const isMe = (winner === 'loyalists' && myRole === 'loyalist') ||
+                 (winner === 'conspirators' && (myRole === 'conspirator' || myRole === 'mastermind'));
+    showOverlay(isMe ? '🏆' : '😢', isMe ? 'YOUR TEAM WINS!' : 'YOUR TEAM LOSES!',
+      state?.winReason || (isMe ? 'Congratulations!' : 'Better luck next time!'));
+    playSound(isMe ? 'win' : 'lose');
+  } else {
+    const winnerPlayer = (session.players || []).find(p => p.id === winner);
+    const isMe = winner === session.playerId;
+    showOverlay(isMe ? '🏆' : '😢',
+      isMe ? 'YOU WIN!' : (winnerPlayer ? `${winnerPlayer.nickname} WINS!` : 'GAME OVER'),
+      isMe ? 'Congratulations!' : 'Better luck next time!');
+    playSound(isMe ? 'win' : 'lose');
+  }
 });
 
 socket.on('game:player_disconnected', () => {

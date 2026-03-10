@@ -38,11 +38,11 @@ const games = {
   shadow_court: {
     id: 'shadow_court',
     name: 'Shadow Court',
-    description: 'A conspirator lurks among the council. Debate, deceive, and vote — uncover the traitor before the court falls from within.',
+    description: 'Loyalists vs Conspirators in a battle of legislation and deceit. Pass loyal decrees or corrupt the court — but beware the Mastermind hiding among you.',
     thumbnail: '🎭',
     type: 'multiplayer',
-    minPlayers: 3,
-    maxPlayers: 6,
+    minPlayers: 5,
+    maxPlayers: 10,
     tags: ['social', 'deduction', 'party'],
     color: '#1A1A2E'
   },

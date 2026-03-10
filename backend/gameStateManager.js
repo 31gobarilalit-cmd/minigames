@@ -218,102 +218,518 @@ const Prowl = {
 };
 
 // ──────────────────────────────────────────────
-//  SHADOW COURT  (social deduction)
+//  SHADOW COURT  (legislative social deduction)
+//  Loyalists vs Conspirators + Mastermind
+//  Public-domain hidden-role legislative mechanic
 // ──────────────────────────────────────────────
 const ShadowCourt = {
-  ROLES: ['traitor', 'investigator', 'councilor', 'councilor', 'councilor', 'councilor'],
+
+  // Role distribution by player count: [loyalists, conspirators, mastermind(always 1)]
+  ROLE_DIST: {
+    5:  [3, 1, 1],
+    6:  [4, 1, 1],
+    7:  [4, 2, 1],
+    8:  [5, 2, 1],
+    9:  [5, 3, 1],
+    10: [6, 3, 1]
+  },
+
+  // Presidential powers after Nth corrupt policy enacted (index 0 = after 1st corrupt)
+  POWERS: {
+    small:  [null, null, 'peek', 'execute', 'execute'],           // 5-6 players
+    medium: [null, 'investigate', 'special_election', 'execute', 'execute'], // 7-8
+    large:  ['investigate', 'investigate', 'special_election', 'execute', 'execute'] // 9-10
+  },
+
+  _shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  },
+
+  _buildDeck() {
+    const deck = [];
+    for (let i = 0; i < 6; i++) deck.push('loyal');
+    for (let i = 0; i < 11; i++) deck.push('corrupt');
+    return this._shuffle(deck);
+  },
+
+  _getPowerTier(count) {
+    if (count <= 6) return 'small';
+    if (count <= 8) return 'medium';
+    return 'large';
+  },
 
   init(players) {
-    const roles = this._assignRoles(players.length);
+    const n = players.length;
+    const [nLoy, nCon] = this.ROLE_DIST[n] || this.ROLE_DIST[5];
+
+    // Build role array and shuffle
+    const roles = [];
+    for (let i = 0; i < nLoy; i++) roles.push('loyalist');
+    for (let i = 0; i < nCon; i++) roles.push('conspirator');
+    roles.push('mastermind');
+    this._shuffle(roles);
+
     const assignments = {};
     players.forEach((p, i) => { assignments[p.id] = roles[i]; });
+
+    const mastermindId = players.find((_, i) => roles[i] === 'mastermind').id;
+    const conspiratorIds = players.filter((_, i) => roles[i] === 'conspirator').map((p) => p.id);
+
+    // Knowledge rules
+    // 5-6: conspirators and mastermind know each other
+    // 7-10: conspirators know mastermind, mastermind does NOT know conspirators
+    const knowledge = {};
+    players.forEach(p => { knowledge[p.id] = []; });
+
+    if (n <= 6) {
+      // Mastermind knows conspirators
+      knowledge[mastermindId] = conspiratorIds.slice();
+      // Conspirators know mastermind
+      conspiratorIds.forEach(cid => { knowledge[cid] = [mastermindId]; });
+    } else {
+      // Conspirators know mastermind, mastermind does NOT know conspirators
+      conspiratorIds.forEach(cid => { knowledge[cid] = [mastermindId]; });
+      // Mastermind gets empty knowledge
+    }
+
+    const deck = this._buildDeck();
+    const regentIdx = 0; // first player is first regent
+
     return {
-      assignments,           // server-side only; clients only see own role
-      phase: 'discussion',   // discussion | voting | reveal
+      assignments,       // role per player (server only)
+      knowledge,         // who each player knows (server only)
+      mastermindId,
+      conspiratorIds,
+      players: players.map(p => ({ id: p.id, nickname: p.nickname, alive: true })),
+      deck,
+      discard: [],
+      loyalPolicies: 0,
+      corruptPolicies: 0,
+      electionTracker: 0,
+      regentIdx,
+      regentId: players[regentIdx].id,
+      advisorId: null,
+      prevRegentId: null,
+      prevAdvisorId: null,
+      phase: 'nominate',   // nominate | vote | regent_discard | advisor_enact | power_investigate | power_peek | power_special_election | power_execute | game_over
       votes: {},
-      eliminated: [],
-      round: 1,
-      traitorId: players[Object.values(assignments).indexOf('traitor')]?.id ||
-                players.find((_, i) => roles[i] === 'traitor')?.id,
+      drawnPolicies: null,  // 3 cards drawn by regent
+      passedPolicies: null, // 2 cards passed to advisor
+      lastEnacted: null,
+      specialElectionReturnIdx: null, // to return after special election
+      vetoUnlocked: false,  // veto power after 5th corrupt (not implementing full veto for simplicity)
+      log: [],
       winner: null,
-      players: players.map(p => ({ id: p.id, nickname: p.nickname, alive: true }))
+      winReason: null,
+      investigatedParty: null // result of investigate power for current regent
     };
   },
 
-  _assignRoles(count) {
-    const roles = ['traitor', 'investigator', ...Array(count - 2).fill('councilor')];
-    for (let i = roles.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [roles[i], roles[j]] = [roles[j], roles[i]];
+  _alivePlayers(state) {
+    return state.players.filter(p => p.alive);
+  },
+
+  _alivePlayerIds(state) {
+    return this._alivePlayers(state).map(p => p.id);
+  },
+
+  _isAlive(state, pid) {
+    const p = state.players.find(pl => pl.id === pid);
+    return p && p.alive;
+  },
+
+  _drawPolicies(state, count) {
+    // Reshuffle if needed
+    if (state.deck.length < count) {
+      state.deck = state.deck.concat(state.discard);
+      state.discard = [];
+      this._shuffle(state.deck);
     }
-    return roles;
+    return state.deck.splice(0, count);
+  },
+
+  _advanceRegent(state) {
+    const alive = this._alivePlayers(state);
+    if (state.specialElectionReturnIdx !== null) {
+      // Return to the next player after the one who was regent before special election
+      state.regentIdx = state.specialElectionReturnIdx;
+      state.specialElectionReturnIdx = null;
+    } else {
+      // Move clockwise to next alive player
+      let idx = state.regentIdx;
+      do {
+        idx = (idx + 1) % state.players.length;
+      } while (!state.players[idx].alive);
+      state.regentIdx = idx;
+    }
+    state.regentId = state.players[state.regentIdx].id;
+  },
+
+  _getTermLimitedIds(state) {
+    // Can't nominate previous regent or previous advisor (if alive and more than 5 alive)
+    const alive = this._alivePlayers(state);
+    const limited = new Set();
+    if (state.prevAdvisorId && this._isAlive(state, state.prevAdvisorId)) {
+      limited.add(state.prevAdvisorId);
+    }
+    // Previous regent term limit only applies if >5 alive players
+    if (alive.length > 5 && state.prevRegentId && this._isAlive(state, state.prevRegentId)) {
+      limited.add(state.prevRegentId);
+    }
+    return limited;
+  },
+
+  _getPower(state) {
+    const tier = this._getPowerTier(state.players.length);
+    const powers = this.POWERS[tier];
+    const idx = state.corruptPolicies - 1; // 0-indexed
+    if (idx >= 0 && idx < powers.length) return powers[idx];
+    return null;
+  },
+
+  _enactPolicy(state, policy) {
+    state.lastEnacted = policy;
+    if (policy === 'loyal') {
+      state.loyalPolicies++;
+      state.log.push('A Loyal Decree was enacted.');
+      if (state.loyalPolicies >= 5) {
+        state.winner = 'loyalists';
+        state.winReason = '5 Loyal Decrees enacted!';
+        state.phase = 'game_over';
+        return { state: this._publicState(state), gameOver: true, winner: 'loyalists', perPlayer: true };
+      }
+    } else {
+      state.corruptPolicies++;
+      state.log.push('A Corrupt Decree was enacted.');
+      if (state.corruptPolicies >= 6) {
+        state.winner = 'conspirators';
+        state.winReason = '6 Corrupt Decrees enacted!';
+        state.phase = 'game_over';
+        return { state: this._publicState(state), gameOver: true, winner: 'conspirators', perPlayer: true };
+      }
+
+      // Check for presidential power
+      const power = this._getPower(state);
+      if (power) {
+        state.phase = 'power_' + power;
+        state.log.push(`Regent receives power: ${power.replace('_', ' ')}.`);
+        return { state: this._publicState(state), perPlayer: true };
+      }
+    }
+
+    // No power or loyal policy — advance to next round
+    return this._startNextRound(state);
+  },
+
+  _startNextRound(state) {
+    state.prevRegentId = state.regentId;
+    state.prevAdvisorId = state.advisorId;
+    state.advisorId = null;
+    state.drawnPolicies = null;
+    state.passedPolicies = null;
+    state.investigatedParty = null;
+    this._advanceRegent(state);
+    state.phase = 'nominate';
+    state.votes = {};
+    return { state: this._publicState(state), perPlayer: true };
+  },
+
+  _chaosEnact(state) {
+    // Top policy auto-enacted, no power triggered
+    const cards = this._drawPolicies(state, 1);
+    if (cards.length === 0) return this._startNextRound(state);
+    const policy = cards[0];
+    state.lastEnacted = policy;
+    state.electionTracker = 0;
+    // Reset term limits on chaos
+    state.prevRegentId = null;
+    state.prevAdvisorId = null;
+    state.log.push(`Election tracker hit 3! A ${policy} policy was auto-enacted.`);
+
+    if (policy === 'loyal') {
+      state.loyalPolicies++;
+      if (state.loyalPolicies >= 5) {
+        state.winner = 'loyalists';
+        state.winReason = '5 Loyal Decrees enacted (chaos)!';
+        state.phase = 'game_over';
+        return { state: this._publicState(state), gameOver: true, winner: 'loyalists', perPlayer: true };
+      }
+    } else {
+      state.corruptPolicies++;
+      if (state.corruptPolicies >= 6) {
+        state.winner = 'conspirators';
+        state.winReason = '6 Corrupt Decrees enacted (chaos)!';
+        state.phase = 'game_over';
+        return { state: this._publicState(state), gameOver: true, winner: 'conspirators', perPlayer: true };
+      }
+    }
+
+    // No power on chaos — go to next round
+    state.advisorId = null;
+    state.drawnPolicies = null;
+    state.passedPolicies = null;
+    state.investigatedParty = null;
+    this._advanceRegent(state);
+    state.phase = 'nominate';
+    state.votes = {};
+    return { state: this._publicState(state), perPlayer: true };
   },
 
   processMove(state, playerId, move) {
     const { action } = move;
 
-    if (action === 'vote') {
-      if (state.phase !== 'voting') return { error: 'Not voting phase' };
-      state.votes[playerId] = move.targetId;
+    // ── NOMINATE ADVISOR ──
+    if (action === 'nominate_advisor') {
+      if (state.phase !== 'nominate') return { error: 'Not nomination phase' };
+      if (playerId !== state.regentId) return { error: 'Only the Regent can nominate' };
+      const targetId = move.targetId;
+      if (!this._isAlive(state, targetId)) return { error: 'Target is not alive' };
+      if (targetId === state.regentId) return { error: 'Cannot nominate yourself' };
+      const termLimited = this._getTermLimitedIds(state);
+      if (termLimited.has(targetId)) return { error: 'That player is term-limited' };
 
-      const alivePlayers = state.players.filter(p => p.alive);
-      if (Object.keys(state.votes).length >= alivePlayers.length) {
-        return this._resolveVote(state);
-      }
-    }
-
-    if (action === 'start_vote') {
-      state.phase = 'voting';
+      state.advisorId = targetId;
+      state.phase = 'vote';
       state.votes = {};
+      state.log.push(`${this._name(state, playerId)} nominated ${this._name(state, targetId)} as Advisor.`);
+      return { state: this._publicState(state), perPlayer: true };
     }
 
-    if (action === 'traitor_eliminate') {
-      if (state.assignments[playerId] !== 'traitor') return { error: 'Not the traitor' };
-      const target = state.players.find(p => p.id === move.targetId && p.alive);
-      if (!target) return { error: 'Invalid target' };
-      target.alive = false;
-      state.eliminated.push(move.targetId);
+    // ── VOTE ──
+    if (action === 'vote') {
+      if (state.phase !== 'vote') return { error: 'Not voting phase' };
+      if (!this._isAlive(state, playerId)) return { error: 'Dead players cannot vote' };
+      if (state.votes[playerId] !== undefined) return { error: 'Already voted' };
+      const v = move.value; // 'ja' or 'nein'
+      if (v !== 'ja' && v !== 'nein') return { error: 'Vote must be ja or nein' };
+      state.votes[playerId] = v;
 
-      const aliveCivilians = state.players.filter(p => p.alive && p.id !== state.traitorId);
-      if (aliveCivilians.length === 0) {
-        state.winner = 'traitor';
-        return { state: this._publicState(state), gameOver: true, winner: 'traitor', perPlayer: true };
+      const alive = this._alivePlayers(state);
+      if (Object.keys(state.votes).length < alive.length) {
+        // Still waiting for votes
+        return { state: this._publicState(state), perPlayer: true };
+      }
+
+      // Tally votes
+      let ja = 0, nein = 0;
+      Object.values(state.votes).forEach(val => { if (val === 'ja') ja++; else nein++; });
+      const passed = ja > nein; // strict majority
+
+      state.log.push(`Vote result: ${ja} Ja, ${nein} Nein — ${passed ? 'PASSED' : 'FAILED'}.`);
+
+      if (passed) {
+        // Check mastermind-as-advisor win condition
+        if (state.corruptPolicies >= 3 && state.advisorId === state.mastermindId) {
+          state.winner = 'conspirators';
+          state.winReason = 'Mastermind elected as Advisor after 3+ Corrupt Decrees!';
+          state.phase = 'game_over';
+          return { state: this._publicState(state), gameOver: true, winner: 'conspirators', perPlayer: true };
+        }
+
+        state.electionTracker = 0;
+        // Regent draws 3 policies
+        state.drawnPolicies = this._drawPolicies(state, 3);
+        state.phase = 'regent_discard';
+        return { state: this._publicState(state), perPlayer: true };
+      } else {
+        // Election failed
+        state.electionTracker++;
+        state.log.push(`Election tracker: ${state.electionTracker}/3.`);
+
+        if (state.electionTracker >= 3) {
+          return this._chaosEnact(state);
+        }
+
+        // Advance to next regent
+        state.prevRegentId = state.regentId;
+        state.prevAdvisorId = state.advisorId;
+        state.advisorId = null;
+        state.drawnPolicies = null;
+        state.passedPolicies = null;
+        this._advanceRegent(state);
+        state.phase = 'nominate';
+        state.votes = {};
+        return { state: this._publicState(state), perPlayer: true };
       }
     }
 
-    return { state: this._publicState(state), perPlayer: true };
+    // ── REGENT DISCARDS 1 POLICY ──
+    if (action === 'discard_policy') {
+      if (state.phase !== 'regent_discard') return { error: 'Not regent discard phase' };
+      if (playerId !== state.regentId) return { error: 'Only the Regent discards' };
+      const idx = move.index; // index of card to discard (0, 1, or 2)
+      if (idx < 0 || idx >= state.drawnPolicies.length) return { error: 'Invalid card index' };
+
+      const discarded = state.drawnPolicies.splice(idx, 1)[0];
+      state.discard.push(discarded);
+      state.passedPolicies = state.drawnPolicies.slice(); // 2 remaining
+      state.drawnPolicies = null;
+      state.phase = 'advisor_enact';
+      state.log.push('Regent passed 2 policies to the Advisor.');
+      return { state: this._publicState(state), perPlayer: true };
+    }
+
+    // ── ADVISOR ENACTS 1 POLICY ──
+    if (action === 'enact_policy') {
+      if (state.phase !== 'advisor_enact') return { error: 'Not advisor enact phase' };
+      if (playerId !== state.advisorId) return { error: 'Only the Advisor enacts' };
+      const idx = move.index; // index of card to enact (0 or 1)
+      if (idx < 0 || idx >= state.passedPolicies.length) return { error: 'Invalid card index' };
+
+      const enacted = state.passedPolicies[idx];
+      const discarded = state.passedPolicies[1 - idx];
+      state.discard.push(discarded);
+      state.passedPolicies = null;
+
+      return this._enactPolicy(state, enacted);
+    }
+
+    // ── POWER: INVESTIGATE ──
+    if (action === 'investigate') {
+      if (state.phase !== 'power_investigate') return { error: 'Not investigate phase' };
+      if (playerId !== state.regentId) return { error: 'Only the Regent investigates' };
+      const targetId = move.targetId;
+      if (!this._isAlive(state, targetId)) return { error: 'Target not alive' };
+      if (targetId === state.regentId) return { error: 'Cannot investigate yourself' };
+
+      // Reveal party membership (loyalist or conspirator/mastermind → "corrupt")
+      const role = state.assignments[targetId];
+      const party = role === 'loyalist' ? 'loyalist' : 'conspirator';
+      state.investigatedParty = { targetId, party };
+      state.log.push(`Regent investigated ${this._name(state, targetId)}.`);
+
+      // Auto-advance after investigate
+      return this._startNextRound(state);
+    }
+
+    // ── POWER: PEEK (done acknowledging) ──
+    if (action === 'peek_done') {
+      if (state.phase !== 'power_peek') return { error: 'Not peek phase' };
+      if (playerId !== state.regentId) return { error: 'Only the Regent peeks' };
+      return this._startNextRound(state);
+    }
+
+    // ── POWER: SPECIAL ELECTION ──
+    if (action === 'special_election') {
+      if (state.phase !== 'power_special_election') return { error: 'Not special election phase' };
+      if (playerId !== state.regentId) return { error: 'Only the Regent picks' };
+      const targetId = move.targetId;
+      if (!this._isAlive(state, targetId)) return { error: 'Target not alive' };
+      if (targetId === state.regentId) return { error: 'Cannot pick yourself' };
+
+      // Save return index so after this special regent's turn, we resume normal order
+      // Find the next regent index in normal order after current regent
+      let returnIdx = state.regentIdx;
+      do {
+        returnIdx = (returnIdx + 1) % state.players.length;
+      } while (!state.players[returnIdx].alive);
+      state.specialElectionReturnIdx = returnIdx;
+
+      state.prevRegentId = state.regentId;
+      state.prevAdvisorId = state.advisorId;
+      state.advisorId = null;
+      state.drawnPolicies = null;
+      state.passedPolicies = null;
+      state.investigatedParty = null;
+
+      // Set the chosen player as next regent
+      const targetIdx = state.players.findIndex(p => p.id === targetId);
+      state.regentIdx = targetIdx;
+      state.regentId = targetId;
+      state.phase = 'nominate';
+      state.votes = {};
+      state.log.push(`${this._name(state, playerId)} called a special election. ${this._name(state, targetId)} is the new Regent.`);
+      return { state: this._publicState(state), perPlayer: true };
+    }
+
+    // ── POWER: EXECUTE ──
+    if (action === 'execute') {
+      if (state.phase !== 'power_execute') return { error: 'Not execute phase' };
+      if (playerId !== state.regentId) return { error: 'Only the Regent executes' };
+      const targetId = move.targetId;
+      if (!this._isAlive(state, targetId)) return { error: 'Target not alive' };
+      if (targetId === state.regentId) return { error: 'Cannot execute yourself' };
+
+      const target = state.players.find(p => p.id === targetId);
+      target.alive = false;
+      state.log.push(`${this._name(state, playerId)} executed ${this._name(state, targetId)}.`);
+
+      // Check if mastermind was killed
+      if (targetId === state.mastermindId) {
+        state.winner = 'loyalists';
+        state.winReason = 'The Mastermind was executed!';
+        state.phase = 'game_over';
+        return { state: this._publicState(state), gameOver: true, winner: 'loyalists', perPlayer: true };
+      }
+
+      return this._startNextRound(state);
+    }
+
+    return { error: 'Unknown action: ' + action };
   },
 
-  _resolveVote(state) {
-    const tally = {};
-    Object.values(state.votes).forEach(v => { tally[v] = (tally[v] || 0) + 1; });
-    const eliminated = Object.entries(tally).sort((a,b) => b[1]-a[1])[0][0];
-    const target = state.players.find(p => p.id === eliminated);
-    if (target) target.alive = false;
-    state.eliminated.push(eliminated);
-    state.phase = 'discussion';
-    state.votes = {};
-    state.round++;
-
-    if (eliminated === state.traitorId) {
-      state.winner = 'civilians';
-      return { state: this._publicState(state), gameOver: true, winner: 'civilians' };
-    }
-    const aliveCivilians = state.players.filter(p => p.alive && p.id !== state.traitorId);
-    if (aliveCivilians.length <= 1) {
-      state.winner = 'traitor';
-      return { state: this._publicState(state), gameOver: true, winner: 'traitor' };
-    }
-    return { state: this._publicState(state) };
-  },
-
-  _clientState(state, pid) {
-    return { ...this._publicState(state), myRole: state.assignments[pid] };
+  _name(state, pid) {
+    const p = state.players.find(pl => pl.id === pid);
+    return p ? p.nickname : pid;
   },
 
   _publicState(state) {
-    const { assignments, ...pub } = state;
-    if (pub.winner) pub.revealedAssignments = assignments;
+    // Strip secrets: assignments, knowledge, deck contents, drawn/passed policies
+    const {
+      assignments, knowledge, deck, discard, drawnPolicies, passedPolicies, investigatedParty,
+      mastermindId, conspiratorIds,
+      ...pub
+    } = state;
+
+    pub.deckSize = deck.length;
+    pub.discardSize = discard.length;
+
+    // On game over, reveal all roles
+    if (pub.winner) {
+      pub.revealedAssignments = assignments;
+      pub.revealedMastermindId = mastermindId;
+      pub.revealedConspiratorIds = conspiratorIds;
+    }
+
+    // Show vote results after all votes are in (phase moved past vote)
+    // Votes are kept as-is in pub since they're public after tallying
+
+    return pub;
+  },
+
+  _clientState(state, pid) {
+    const pub = this._publicState(state);
+    pub.myRole = state.assignments[pid];
+
+    // Knowledge: which other players this player knows (and their roles)
+    const knownIds = state.knowledge[pid] || [];
+    pub.knownPlayers = knownIds.map(kid => ({
+      id: kid,
+      role: state.assignments[kid]
+    }));
+
+    // Legislation: show drawn/passed policies only to the relevant player
+    if (state.phase === 'regent_discard' && pid === state.regentId && state.drawnPolicies) {
+      pub.drawnPolicies = state.drawnPolicies.slice();
+    }
+    if (state.phase === 'advisor_enact' && pid === state.advisorId && state.passedPolicies) {
+      pub.passedPolicies = state.passedPolicies.slice();
+    }
+
+    // Peek power: show top 3 deck cards to regent
+    if (state.phase === 'power_peek' && pid === state.regentId) {
+      pub.peekCards = state.deck.slice(0, 3);
+    }
+
+    // Investigate result: only regent sees it
+    if (state.investigatedParty && pid === state.regentId) {
+      pub.investigatedParty = state.investigatedParty;
+    }
+
     return pub;
   },
 
@@ -809,10 +1225,8 @@ class GameStateManager {
   getPlayerState(roomId, playerId) {
     const entry = this.states.get(roomId);
     if (!entry) return null;
-    // For Shadow Court, add the player's own role
-    if (entry.gameId === 'shadow_court' && entry.state.assignments) {
-      const pub = this._serializeForClient(entry.gameId, entry.state);
-      return { ...pub, myRole: entry.state.assignments[playerId] };
+    if (entry.gameId === 'shadow_court') {
+      return handlers[entry.gameId]._clientState(entry.state, playerId);
     }
     return this._serializeForClient(entry.gameId, entry.state);
   }
