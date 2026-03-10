@@ -21,7 +21,7 @@ const games = {
     id: 'prowl',
     name: 'Prowl',
     description: 'Two wolves hunt a flock of twenty sheep on a cross-shaped board. Sheep must fill the pen to win — wolves must capture enough to stop them!',
-    thumbnail: '🦊',
+    thumbnail: '🐺',
     type: 'multiplayer',
     minPlayers: 2,
     maxPlayers: 2,

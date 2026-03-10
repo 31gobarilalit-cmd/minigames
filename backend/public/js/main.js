@@ -3,20 +3,14 @@
  */
 
 const GAME_AVATARS = {
-  prowl:  '🦊',
+  prowl:  '🐺',
   shadow_court: '🎭',
   realm_and_trade: '🏰',
   homerun: '🎲',
   serpents_path: '🐍'
 };
 
-const PLAYER_LABELS = {
-  prowl: '2 players',
-  shadow_court: '3–6 players',
-  realm_and_trade: '3–4 players',
-  homerun: '2–4 players',
-  serpents_path: '2–4 players'
-};
+// Player labels are now derived from the API (minPlayers/maxPlayers)
 
 /* ── Restore saved nickname ── */
 const nicknameInput = document.getElementById('nicknameInput');
@@ -54,7 +48,7 @@ function buildCard(game) {
       </div>
     </div>
     <div class="card-footer">
-      <span class="player-count">${PLAYER_LABELS[game.id] || ''}</span>
+      <span class="player-count">${game.minPlayers === game.maxPlayers ? game.minPlayers + ' players' : game.minPlayers + '–' + game.maxPlayers + ' players'}</span>
       <button class="btn-play">PLAY</button>
     </div>
   `;
