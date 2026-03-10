@@ -679,10 +679,10 @@ const Homerun = {
         color: piece.color,
         steps: piece.steps,
         positions: piece.steps.map(s => {
-          if (s === 0) return -1; // in yard
-          if (s >= this.HOME_STRETCH) return 56; // finished
-          if (s > this.TRACK_SIZE) return 52 + (s - this.TRACK_SIZE); // home stretch
-          return this._stepsToPos(piece.color, s);
+          if (s === 0) return -1;  // in yard
+          if (s >= this.HOME_STRETCH) return 99;  // finished (at center)
+          if (s > this.TRACK_SIZE) return s;       // home stretch: 53-56
+          return this._stepsToPos(piece.color, s); // shared track: 0-51
         })
       };
     });
@@ -768,6 +768,17 @@ class GameStateManager {
     if (!handler) return null;
     const state = handler.init(players);
     this.states.set(roomId, { gameId, state, players });
+    // Return a client-safe serialized copy (handles Sets, computed fields, etc.)
+    return this._serializeForClient(gameId, state);
+  }
+
+  _serializeForClient(gameId, state) {
+    const handler = handlers[gameId];
+    if (!handler) return state;
+    // Use the handler's own serialize method if available
+    if (handler._serialize) return handler._serialize(state);
+    if (handler._serializeState) return handler._serializeState(state);
+    if (handler._publicState) return handler._publicState(state);
     return state;
   }
 
@@ -790,7 +801,9 @@ class GameStateManager {
   }
 
   getState(roomId) {
-    return this.states.get(roomId)?.state || null;
+    const entry = this.states.get(roomId);
+    if (!entry) return null;
+    return this._serializeForClient(entry.gameId, entry.state);
   }
 
   getPlayerState(roomId, playerId) {
@@ -798,9 +811,10 @@ class GameStateManager {
     if (!entry) return null;
     // For Shadow Court, add the player's own role
     if (entry.gameId === 'shadow_court' && entry.state.assignments) {
-      return { ...entry.state, myRole: entry.state.assignments[playerId], assignments: undefined };
+      const pub = this._serializeForClient(entry.gameId, entry.state);
+      return { ...pub, myRole: entry.state.assignments[playerId] };
     }
-    return entry.state;
+    return this._serializeForClient(entry.gameId, entry.state);
   }
 }
 

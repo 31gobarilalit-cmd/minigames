@@ -116,7 +116,7 @@ document.getElementById('overlayRestart').onclick = () => {
 /* ── Status bar ── */
 function updateTurnDisplay(state) {
   if (!state) return;
-  const turnId = state.currentTurn || state.foxPlayer;
+  const turnId = state.currentTurn || state.wolfPlayer;
   if (!turnId) return;
   const player = (session.players || []).find(p => p.id === turnId);
   const isMe   = turnId === session.playerId;
