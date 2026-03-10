@@ -117,14 +117,21 @@ io.on('connection', (socket) => {
     _startGame(roomId, gameId);
   });
 
+  // ── Game page rejoin (after redirect from lobby) ──
   socket.on('game:rejoin', ({ roomId, playerId }) => {
     const lobby = lobbyManager.getLobby(roomId);
     if (!lobby) return socket.emit('error', { message: 'Room not found' });
+
     socket.join(roomId);
     socket.data.roomId = roomId;
     socket.data.gameId = lobby.gameId;
+    socket.data.playerId = playerId;  // map new socket to original player ID
+    socket.data.inGame = true;        // mark as game-page socket
+
+    console.log(`[Rejoin] ${socket.id} rejoined room ${roomId} as player ${playerId}`);
+
     // Send current game state
-    const state = gameStateManager.getPlayerState(roomId, socket.id) || gameStateManager.getState(roomId);
+    const state = gameStateManager.getPlayerState(roomId, playerId) || gameStateManager.getState(roomId);
     if (state) socket.emit('game:state_update', state);
   });
 
@@ -132,19 +139,21 @@ io.on('connection', (socket) => {
     const { roomId } = socket.data;
     if (!roomId) return;
 
-    const result = gameStateManager.processMove(roomId, socket.id, move);
+    // Use mapped player ID (original lobby socket ID) for game logic
+    const playerId = socket.data.playerId || socket.id;
+
+    const result = gameStateManager.processMove(roomId, playerId, move);
     if (result.error) return socket.emit('error', { message: result.error });
 
     if (result.perPlayer) {
       // Send per-player state (e.g., Shadow Court hides roles)
-      const lobby = lobbyManager.getLobby(roomId);
-      if (lobby) {
-        const sockets = io.sockets.adapter.rooms.get(roomId);
-        if (sockets) {
-          for (const sid of sockets) {
-            const playerState = gameStateManager.getPlayerState(roomId, sid);
-            io.to(sid).emit('game:state_update', playerState);
-          }
+      const sockets = io.sockets.adapter.rooms.get(roomId);
+      if (sockets) {
+        for (const sid of sockets) {
+          const s = io.sockets.sockets.get(sid);
+          const pid = s?.data?.playerId || sid;
+          const playerState = gameStateManager.getPlayerState(roomId, pid);
+          io.to(sid).emit('game:state_update', playerState);
         }
       }
     } else {
@@ -156,7 +165,9 @@ io.on('connection', (socket) => {
         const sockets = io.sockets.adapter.rooms.get(roomId);
         if (sockets) {
           for (const sid of sockets) {
-            const playerState = gameStateManager.getPlayerState(roomId, sid);
+            const s = io.sockets.sockets.get(sid);
+            const pid = s?.data?.playerId || sid;
+            const playerState = gameStateManager.getPlayerState(roomId, pid);
             io.to(sid).emit('game:over', { winner: result.winner, state: playerState });
           }
         }
@@ -184,9 +195,24 @@ io.on('connection', (socket) => {
     console.log(`[-] ${socket.id} disconnected`);
     if (!roomId) return;
 
-    lobbyManager.removePlayer(roomId, socket.id);
     const lobby = lobbyManager.getLobby(roomId);
     if (!lobby) return;
+
+    // If the game has started and this is a LOBBY socket disconnecting
+    // (not a game-page socket), it's the expected redirect — don't clean up.
+    if (lobby.started && !socket.data.inGame) {
+      console.log(`[Redirect] ${socket.id} lobby socket disconnected (expected redirect)`);
+      return;
+    }
+
+    // If a game-page socket disconnects, that's a real player leaving mid-game
+    if (lobby.started && socket.data.inGame) {
+      io.to(roomId).emit('game:player_disconnected', { playerId: socket.data.playerId || socket.id });
+      return;
+    }
+
+    // Game not started — normal lobby cleanup
+    lobbyManager.removePlayer(roomId, socket.id);
 
     if (lobby.players.length === 0) {
       lobbyManager.deleteLobby(roomId);
@@ -196,7 +222,6 @@ io.on('connection', (socket) => {
     const game = gameRegistry.getGame(lobby.gameId);
     io.to(roomId).emit('lobby:updated', _lobbyPayload(lobby, game));
     io.to(roomId).emit('lobby:player_left', { playerId: socket.id, players: lobby.players });
-    if (lobby.started) io.to(roomId).emit('game:player_disconnected', { playerId: socket.id });
   });
 });
 
@@ -232,7 +257,9 @@ function _startGame(roomId, gameId) {
     const sockets = io.sockets.adapter.rooms.get(roomId);
     if (sockets) {
       for (const sid of sockets) {
-        const playerState = gameStateManager.getPlayerState(roomId, sid);
+        const s = io.sockets.sockets.get(sid);
+        const pid = s?.data?.playerId || sid;
+        const playerState = gameStateManager.getPlayerState(roomId, pid);
         io.to(sid).emit('game:started', { gameId, players: lobby.players, state: playerState });
       }
     }
