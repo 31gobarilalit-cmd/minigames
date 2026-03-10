@@ -117,6 +117,17 @@ io.on('connection', (socket) => {
     _startGame(roomId, gameId);
   });
 
+  socket.on('game:rejoin', ({ roomId, playerId }) => {
+    const lobby = lobbyManager.getLobby(roomId);
+    if (!lobby) return socket.emit('error', { message: 'Room not found' });
+    socket.join(roomId);
+    socket.data.roomId = roomId;
+    socket.data.gameId = lobby.gameId;
+    // Send current game state
+    const state = gameStateManager.getPlayerState(roomId, socket.id) || gameStateManager.getState(roomId);
+    if (state) socket.emit('game:state_update', state);
+  });
+
   socket.on('game:move', ({ move }) => {
     const { roomId } = socket.data;
     if (!roomId) return;
@@ -124,9 +135,34 @@ io.on('connection', (socket) => {
     const result = gameStateManager.processMove(roomId, socket.id, move);
     if (result.error) return socket.emit('error', { message: result.error });
 
-    io.to(roomId).emit('game:state_update', result.state);
+    if (result.perPlayer) {
+      // Send per-player state (e.g., Shadow Court hides roles)
+      const lobby = lobbyManager.getLobby(roomId);
+      if (lobby) {
+        const sockets = io.sockets.adapter.rooms.get(roomId);
+        if (sockets) {
+          for (const sid of sockets) {
+            const playerState = gameStateManager.getPlayerState(roomId, sid);
+            io.to(sid).emit('game:state_update', playerState);
+          }
+        }
+      }
+    } else {
+      io.to(roomId).emit('game:state_update', result.state);
+    }
+
     if (result.gameOver) {
-      io.to(roomId).emit('game:over', { winner: result.winner, state: result.state });
+      if (result.perPlayer) {
+        const sockets = io.sockets.adapter.rooms.get(roomId);
+        if (sockets) {
+          for (const sid of sockets) {
+            const playerState = gameStateManager.getPlayerState(roomId, sid);
+            io.to(sid).emit('game:over', { winner: result.winner, state: playerState });
+          }
+        }
+      } else {
+        io.to(roomId).emit('game:over', { winner: result.winner, state: result.state });
+      }
       lobbyManager.endGame(roomId);
     }
   });
@@ -190,7 +226,19 @@ function _startGame(roomId, gameId) {
   if (!lobby || lobby.started) return;
   lobbyManager.setStarted(roomId);
   const initialState = gameStateManager.initGame(roomId, gameId, lobby.players);
-  io.to(roomId).emit('game:started', { gameId, players: lobby.players, state: initialState });
+
+  if (gameId === 'shadow_court') {
+    // Send per-player state so each player only sees their own role
+    const sockets = io.sockets.adapter.rooms.get(roomId);
+    if (sockets) {
+      for (const sid of sockets) {
+        const playerState = gameStateManager.getPlayerState(roomId, sid);
+        io.to(sid).emit('game:started', { gameId, players: lobby.players, state: playerState });
+      }
+    }
+  } else {
+    io.to(roomId).emit('game:started', { gameId, players: lobby.players, state: initialState });
+  }
   console.log(`[Game] ${gameId} started in room ${roomId}`);
 }
 

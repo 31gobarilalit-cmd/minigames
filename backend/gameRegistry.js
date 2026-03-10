@@ -20,7 +20,7 @@ const games = {
   prowl: {
     id: 'prowl',
     name: 'Prowl',
-    description: 'One predator stalks a pack of prey across an ancient grid. Can the pack corner the hunter, or will it pick them off one by one?',
+    description: 'Two wolves hunt a flock of twenty sheep on a cross-shaped board. Sheep must fill the pen to win — wolves must capture enough to stop them!',
     thumbnail: '🦊',
     type: 'multiplayer',
     minPlayers: 2,

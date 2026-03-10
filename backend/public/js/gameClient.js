@@ -61,9 +61,9 @@ function renderStatusBar() {
 
 /* ── Socket events ── */
 socket.on('connect', () => {
-  // Re-join room if we have a session (reconnect scenario)
+  // Re-join room on reconnect
   if (session && session.roomId !== 'local') {
-    socket.data = { roomId: session.roomId };
+    socket.emit('game:rejoin', { roomId: session.roomId, playerId: session.playerId });
   }
 });
 

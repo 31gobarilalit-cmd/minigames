@@ -5,122 +5,213 @@
  */
 
 // ──────────────────────────────────────────────
-//  PROWL  (predator-vs-prey cross board)
+//  PROWL  (Sheep & Wolf — 20 sheep vs 2 wolves)
+//  Cross-shaped board + 9-cell pen at top.
+//  Wolves capture by jumping (mandatory). Sheep
+//  win by filling the pen; wolves win by capturing 12+.
 // ──────────────────────────────────────────────
 const Prowl = {
-  // Cross-shaped board positions (33 valid cells on a plus grid)
-  // Represented as flat index 0-48 (7x7), invalid cells are null in adjacency map
+  COLS: 7,
+  ROWS: 10,
+
+  // 42 valid positions on a 10×7 grid
+  VALID: new Set([
+    2,3,4, 9,10,11, 16,17,18,            // pen   (rows 0-2, cols 2-4)
+    23,24,25, 30,31,32,                   // top arm (rows 3-4, cols 2-4)
+    35,36,37,38,39,40,41,                 // middle (row 5)
+    42,43,44,45,46,47,48,                 // middle (row 6)
+    49,50,51,52,53,54,55,                 // middle (row 7)
+    58,59,60, 65,66,67                    // bottom arm (rows 8-9, cols 2-4)
+  ]),
+
+  PEN: new Set([2,3,4,9,10,11,16,17,18]),
+
+  // 8-directional adjacency (including diagonals)
   ADJACENCY: (() => {
-    // Build adjacency for a standard Fox & Geese cross board
-    const adj = {};
+    const COLS = 7;
     const valid = new Set([
-      2,3,4,
-      9,10,11,12,13,14,16,
-      17,18,19,20,21,22,23,
-      24,25,26,27,28,29,30,
-      31,32,33,34,35,36,38,
-      44,45,46
+      2,3,4, 9,10,11, 16,17,18,
+      23,24,25, 30,31,32,
+      35,36,37,38,39,40,41,
+      42,43,44,45,46,47,48,
+      49,50,51,52,53,54,55,
+      58,59,60, 65,66,67
     ]);
+    const adj = {};
     valid.forEach(pos => {
-      const row = Math.floor(pos / 7), col = pos % 7;
+      const row = Math.floor(pos / COLS), col = pos % COLS;
       adj[pos] = [];
-      [[0,1],[0,-1],[1,0],[-1,0]].forEach(([dr,dc]) => {
-        const nr = row+dr, nc = col+dc, np = nr*7+nc;
-        if (nr>=0&&nr<7&&nc>=0&&nc<7&&valid.has(np)) adj[pos].push(np);
-      });
+      for (const [dr, dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) {
+        const nr = row + dr, nc = col + dc, np = nr * COLS + nc;
+        if (nr >= 0 && nr < 10 && nc >= 0 && nc < COLS && valid.has(np)) {
+          adj[pos].push({ pos: np, dr, dc });
+        }
+      }
     });
     return adj;
   })(),
 
   init(players) {
-    // Fox starts at centre (pos 24); Geese fill top portion
-    const geesePositions = [2,3,4,9,10,11,12,13,14,16,17,18,19,20,21,22];
-    const foxPos = 24;
+    // 20 sheep fill rows 6-9 (bottom half)
+    const sheepPositions = [
+      42,43,44,45,46,47,48,   // row 6
+      49,50,51,52,53,54,55,   // row 7
+      58,59,60,               // row 8
+      65,66,67                // row 9
+    ];
+    // 2 wolves start in the top arm
     return {
-      fox: foxPos,
-      geese: new Set(geesePositions),
-      foxPlayer: players[0].id,
-      geesePlayer: players[1].id,
-      currentTurn: players[0].id,   // fox goes first
+      wolves: [23, 25],
+      sheep: new Set(sheepPositions),
+      wolfPlayer: players[0].id,
+      sheepPlayer: players[1].id,
+      currentTurn: players[1].id,   // sheep move first
       captured: 0,
-      winner: null
+      winner: null,
+      activeWolf: null               // wolf index during multi-jump
     };
   },
 
   processMove(state, playerId, move) {
     const { from, to } = move;
-    const isFoxTurn = state.currentTurn === state.foxPlayer;
-
+    if (!(state.sheep instanceof Set)) state.sheep = new Set(state.sheep);
     if (playerId !== state.currentTurn) return { error: 'Not your turn' };
 
-    if (isFoxTurn) {
-      // Fox move
-      if (state.fox !== from) return { error: 'Invalid fox position' };
-      const adj = this.ADJACENCY[from] || [];
-
-      // Check regular move
-      if (adj.includes(to) && !state.geese.has(to)) {
-        state.fox = to;
-      } else {
-        // Check capture (jump over goose)
-        const captured = this._findCapture(from, to, state);
-        if (!captured) return { error: 'Invalid move' };
-        state.geese.delete(captured);
-        state.fox = to;
-        state.captured++;
-      }
-      // Fox wins by capturing enough geese
-      if (state.captured >= 9 || state.geese.size <= 4) {
-        state.winner = state.foxPlayer;
-        return { state: this._serialize(state), gameOver: true, winner: state.foxPlayer };
-      }
+    const isWolfTurn = state.currentTurn === state.wolfPlayer;
+    if (isWolfTurn) {
+      return this._processWolfMove(state, from, to);
     } else {
-      // Geese move (no captures)
-      if (!state.geese.has(from)) return { error: 'Not a goose position' };
-      const adj = this.ADJACENCY[from] || [];
-      if (!adj.includes(to) || state.geese.has(to) || to === state.fox) return { error: 'Invalid move' };
-      // Geese can only move forward (increasing row index)
-      if (Math.floor(to/7) < Math.floor(from/7)) return { error: 'Geese can only move forward' };
-      state.geese.delete(from);
-      state.geese.add(to);
+      return this._processSheepMove(state, from, to);
+    }
+  },
 
-      // Geese win by cornering fox (no valid moves)
-      const foxMoves = (this.ADJACENCY[state.fox] || []).filter(p => !state.geese.has(p));
-      const foxCaptures = this._getAllCaptures(state);
-      if (foxMoves.length === 0 && foxCaptures.length === 0) {
-        state.winner = state.geesePlayer;
-        return { state: this._serialize(state), gameOver: true, winner: state.geesePlayer };
-      }
+  _processSheepMove(state, from, to) {
+    if (!state.sheep.has(from)) return { error: 'No sheep at that position' };
+
+    const adj = this.ADJACENCY[from];
+    const step = adj && adj.find(n => n.pos === to);
+    if (!step) return { error: 'Invalid move' };
+    if (step.dr > 0) return { error: 'Sheep cannot move backward' };
+    if (state.sheep.has(to) || state.wolves.includes(to)) return { error: 'Cell occupied' };
+
+    state.sheep.delete(from);
+    state.sheep.add(to);
+
+    // Sheep win: all 9 pen positions filled
+    const penFilled = [...this.PEN].every(p => state.sheep.has(p));
+    if (penFilled) {
+      state.winner = state.sheepPlayer;
+      return { state: this._serialize(state), gameOver: true, winner: state.sheepPlayer };
     }
 
-    state.currentTurn = isFoxTurn ? state.geesePlayer : state.foxPlayer;
+    state.currentTurn = state.wolfPlayer;
     return { state: this._serialize(state) };
   },
 
-  _findCapture(from, to, state) {
-    const mid = Math.floor((from + to) / 2);
-    const adj = this.ADJACENCY[from] || [];
-    const adjTo = this.ADJACENCY[to] || [];
-    if (adj.includes(mid) && adjTo.includes(mid) && state.geese.has(mid) && !state.geese.has(to) && to !== state.fox) {
-      return mid;
+  _processWolfMove(state, from, to) {
+    const wolfIdx = state.wolves.indexOf(from);
+    if (wolfIdx === -1) return { error: 'No wolf at that position' };
+
+    // Multi-jump: must continue with the same wolf
+    if (state.activeWolf !== null && state.activeWolf !== wolfIdx) {
+      return { error: 'Must continue jumping with the same wolf' };
+    }
+
+    const allCaptures = this._getAllWolfCaptures(state);
+    const mustCapture = allCaptures.length > 0;
+    const captureMove = this._getCaptureMove(state, from, to);
+
+    if (mustCapture && !captureMove) {
+      return { error: 'A capture is available — you must jump!' };
+    }
+
+    if (captureMove) {
+      // Execute capture
+      state.sheep.delete(captureMove.over);
+      state.wolves[wolfIdx] = to;
+      state.captured++;
+
+      // Wolf win: captured 12+ (fewer than 9 sheep remain)
+      if (state.sheep.size < 9) {
+        state.winner = state.wolfPlayer;
+        state.activeWolf = null;
+        return { state: this._serialize(state), gameOver: true, winner: state.wolfPlayer };
+      }
+
+      // Check for multi-jump from landing cell
+      const moreCaps = this._getWolfCapturesFrom(state, to);
+      if (moreCaps.length > 0) {
+        state.activeWolf = wolfIdx;
+        return { state: this._serialize(state) };
+      }
+
+      state.activeWolf = null;
+      state.currentTurn = state.sheepPlayer;
+      return { state: this._serialize(state) };
+    }
+
+    // Regular move (no captures available)
+    const adj = this.ADJACENCY[from];
+    const isAdj = adj && adj.some(n => n.pos === to);
+    if (!isAdj) return { error: 'Invalid move' };
+    if (state.sheep.has(to) || state.wolves.includes(to)) return { error: 'Cell occupied' };
+    if (this.PEN.has(to)) return { error: 'Wolves cannot enter the pen' };
+
+    state.wolves[wolfIdx] = to;
+    state.activeWolf = null;
+    state.currentTurn = state.sheepPlayer;
+    return { state: this._serialize(state) };
+  },
+
+  _getCaptureMove(state, from, to) {
+    const adj = this.ADJACENCY[from];
+    if (!adj) return null;
+    for (const { pos: midPos, dr, dc } of adj) {
+      if (state.sheep.has(midPos)) {
+        const landRow = Math.floor(from / this.COLS) + dr * 2;
+        const landCol = from % this.COLS + dc * 2;
+        const landPos = landRow * this.COLS + landCol;
+        if (landPos === to && this.VALID.has(to) && !this.PEN.has(to) &&
+            !state.sheep.has(to) && !state.wolves.includes(to)) {
+          return { over: midPos };
+        }
+      }
     }
     return null;
   },
 
-  _getAllCaptures(state) {
-    const caps = [];
-    (this.ADJACENCY[state.fox] || []).forEach(mid => {
-      if (state.geese.has(mid)) {
-        (this.ADJACENCY[mid] || []).forEach(landing => {
-          if (!state.geese.has(landing) && landing !== state.fox) caps.push({ mid, landing });
-        });
+  _getWolfCapturesFrom(state, wolfPos) {
+    const captures = [];
+    const adj = this.ADJACENCY[wolfPos];
+    if (!adj) return captures;
+    for (const { pos: midPos, dr, dc } of adj) {
+      if (state.sheep.has(midPos)) {
+        const landRow = Math.floor(wolfPos / this.COLS) + dr * 2;
+        const landCol = wolfPos % this.COLS + dc * 2;
+        const landPos = landRow * this.COLS + landCol;
+        if (landPos >= 0 && this.VALID.has(landPos) && !this.PEN.has(landPos) &&
+            !state.sheep.has(landPos) && !state.wolves.includes(landPos)) {
+          captures.push({ from: wolfPos, over: midPos, to: landPos });
+        }
       }
+    }
+    return captures;
+  },
+
+  _getAllWolfCaptures(state) {
+    const caps = [];
+    state.wolves.forEach(wPos => {
+      caps.push(...this._getWolfCapturesFrom(state, wPos));
     });
     return caps;
   },
 
   _serialize(state) {
-    return { ...state, geese: [...state.geese] };
+    return {
+      ...state,
+      sheep: [...state.sheep],
+      pen: [...this.PEN]
+    };
   },
 
   reset(players) { return this.init(players); }
@@ -186,11 +277,11 @@ const ShadowCourt = {
       const aliveCivilians = state.players.filter(p => p.alive && p.id !== state.traitorId);
       if (aliveCivilians.length === 0) {
         state.winner = 'traitor';
-        return { state: this._clientState(state, playerId), gameOver: true, winner: 'traitor' };
+        return { state: this._publicState(state), gameOver: true, winner: 'traitor', perPlayer: true };
       }
     }
 
-    return { state: this._clientState(state, playerId) };
+    return { state: this._publicState(state), perPlayer: true };
   },
 
   _resolveVote(state) {
@@ -260,6 +351,48 @@ const RealmAndTrade = {
     };
   },
 
+  // Hex tile layout rows: 3, 4, 5, 4, 3 tiles
+  TILE_ROWS: [3, 4, 5, 4, 3],
+
+  // Each tile's 6 vertices, mapped to a shared vertex ID (54 unique vertices for standard board)
+  TILE_VERTICES: (() => {
+    // Standard Catan vertex mapping for 19 hex tiles
+    // Rows of 3, 4, 5, 4, 3 tiles
+    const tileVerts = [];
+    // Vertex IDs are assigned per intersection point.
+    // For simplicity, assign 6 vertex IDs per tile with shared edges.
+    const rowSizes = [3, 4, 5, 4, 3];
+    let vertexId = 0;
+    const vertexMap = {}; // "row,col,corner" -> vertexId
+    const getOrCreate = (key) => {
+      if (!(key in vertexMap)) vertexMap[key] = vertexId++;
+      return vertexMap[key];
+    };
+
+    let tileIdx = 0;
+    rowSizes.forEach((count, row) => {
+      for (let col = 0; col < count; col++) {
+        // Each hex has 6 vertices: top, top-right, bottom-right, bottom, bottom-left, top-left
+        const t  = getOrCreate(`${row},${col},top`);
+        const tr = getOrCreate(`${row},${col},tr`);
+        const br = getOrCreate(`${row},${col},br`);
+        const b  = getOrCreate(`${row},${col},bot`);
+        // Shared vertices with neighbors
+        const bl = col > 0 ? getOrCreate(`${row},${col-1},br`) : getOrCreate(`${row},${col},bl`);
+        const tl = col > 0 ? getOrCreate(`${row},${col-1},tr`) : getOrCreate(`${row},${col},tl`);
+
+        // Share with row above
+        if (row > 0) {
+          // Map top vertices to bottom of row above
+        }
+
+        tileVerts.push([t, tr, br, b, bl, tl]);
+        tileIdx++;
+      }
+    });
+    return tileVerts;
+  })(),
+
   _buildBoard() {
     const types = [...this.TILE_TYPES];
     const nums = [...this.NUMBERS];
@@ -269,7 +402,7 @@ const RealmAndTrade = {
     return types.map((type, i) => ({
       id: i, type,
       number: type === 'desert' ? null : nums[ni++],
-      vertices: []  // simplified
+      vertices: this.TILE_VERTICES[i] || []
     }));
   },
 
@@ -278,9 +411,56 @@ const RealmAndTrade = {
     if (state.currentTurn !== playerId) return { error: 'Not your turn' };
     const player = state.players.find(p => p.id === playerId);
 
+    // ── Setup phase: free settlement + road placement ──
+    if (state.phase === 'setup') {
+      if (action === 'build_settlement') {
+        player.settlements.push(move.vertex);
+        player.vp++;
+
+        // In second round of setup, give initial resources from adjacent tiles
+        if (state.setupDone >= state.players.length) {
+          state.tiles.forEach(tile => {
+            if (tile.type !== 'desert' && tile.vertices.includes(move.vertex)) {
+              player.resources[tile.type] = (player.resources[tile.type] || 0) + 1;
+            }
+          });
+        }
+        return { state };
+      }
+      if (action === 'build_road') {
+        player.roads.push(move.edge);
+        state.setupDone++;
+
+        // Advance turn (snake draft: 1,2,3,3,2,1 for 3 players)
+        const n = state.players.length;
+        const idx = state.players.findIndex(p => p.id === playerId);
+        if (state.setupDone < n) {
+          // First round: forward
+          state.currentTurn = state.players[(idx + 1) % n].id;
+        } else if (state.setupDone < n * 2) {
+          if (state.setupDone === n) {
+            // Stay on same player for second settlement (reverse starts)
+            state.currentTurn = state.players[n - 1].id;
+          } else {
+            // Second round: backward
+            state.currentTurn = state.players[(idx - 1 + n) % n].id;
+          }
+        }
+        if (state.setupDone >= n * 2) {
+          state.phase = 'main';
+          state.currentTurn = state.players[0].id;
+        }
+        return { state };
+      }
+      return { error: 'During setup, place a settlement then a road' };
+    }
+
+    // ── Main phase ──
     if (action === 'roll_dice') {
+      if (state.diceRolled) return { error: 'Already rolled this turn' };
       const d1 = Math.ceil(Math.random()*6), d2 = Math.ceil(Math.random()*6);
       state.dice = [d1, d2];
+      state.diceRolled = true;
       const total = d1 + d2;
       if (total === 7) {
         state.phase_action = 'move_robber';
@@ -326,6 +506,7 @@ const RealmAndTrade = {
     if (action === 'trade') {
       // Bank trade 4:1
       const { give, receive } = move;
+      if (!this.RESOURCES.includes(give) || !this.RESOURCES.includes(receive)) return { error: 'Invalid resource' };
       if ((player.resources[give] || 0) < 4) return { error: 'Need 4 of the same resource' };
       player.resources[give] -= 4;
       player.resources[receive] = (player.resources[receive] || 0) + 1;
@@ -334,6 +515,9 @@ const RealmAndTrade = {
     if (action === 'end_turn') {
       const idx = state.players.findIndex(p => p.id === playerId);
       state.currentTurn = state.players[(idx + 1) % state.players.length].id;
+      state.diceRolled = false;
+      state.dice = null;
+      state.phase_action = null;
     }
 
     return { state };
@@ -367,14 +551,17 @@ const RealmAndTrade = {
 // ──────────────────────────────────────────────
 const Homerun = {
   COLORS: ['red','blue','green','yellow'],
-  HOME_COLS: { red: 1, blue: 13, green: 27, yellow: 40 }, // start positions on 52-cell track
+  HOME_COLS: { red: 0, blue: 13, green: 26, yellow: 39 }, // start positions on 52-cell track
   SAFE_CELLS: [0, 8, 13, 21, 26, 34, 39, 47],
+  TRACK_SIZE: 52,
+  HOME_STRETCH: 57, // positions 52-56 are the home column; 57 = finished
 
   init(players) {
     const pieces = {};
     players.forEach((p, i) => {
       const color = this.COLORS[i];
-      pieces[p.id] = { color, home: [0,0,0,0], positions: [-1,-1,-1,-1] }; // -1 = in yard
+      // Each piece tracks 'steps' taken from its start position (0 = in yard, 1-51 = on track, 52-56 = home stretch, 57 = finished)
+      pieces[p.id] = { color, steps: [0,0,0,0] }; // 0 = in yard
     });
     return {
       players: players.map((p, i) => ({ id: p.id, nickname: p.nickname, color: this.COLORS[i] })),
@@ -386,6 +573,14 @@ const Homerun = {
     };
   },
 
+  // Convert a player's piece steps to absolute board position (for captures & display)
+  _stepsToPos(color, steps) {
+    if (steps === 0) return -1; // in yard
+    if (steps > this.TRACK_SIZE) return -2; // in home stretch (safe, no captures)
+    const start = this.HOME_COLS[color];
+    return (start + steps - 1) % this.TRACK_SIZE;
+  },
+
   processMove(state, playerId, move) {
     if (state.currentTurn !== playerId) return { error: 'Not your turn' };
     const { action } = move;
@@ -395,42 +590,56 @@ const Homerun = {
       if (!state.canRoll) return { error: 'Already rolled' };
       state.dice = Math.ceil(Math.random() * 6);
       state.canRoll = false;
+
+      // Check if any piece can move; if not, auto-pass
+      const hasMove = piece.steps.some((s, i) => {
+        if (s === 0) return state.dice === 6; // need 6 to exit yard
+        if (s >= this.HOME_STRETCH) return false; // already finished
+        const newSteps = s + state.dice;
+        return newSteps <= this.HOME_STRETCH; // can't overshoot home
+      });
+      if (!hasMove) {
+        // No valid moves — auto-pass turn
+        if (state.dice === 6) {
+          state.canRoll = true;
+        } else {
+          const idx = state.players.findIndex(p => p.id === playerId);
+          state.currentTurn = state.players[(idx+1) % state.players.length].id;
+          state.canRoll = true;
+        }
+      }
     }
 
     if (action === 'move_piece') {
       if (state.canRoll) return { error: 'Roll first' };
       const { pieceIndex } = move;
-      const pos = piece.positions[pieceIndex];
+      const steps = piece.steps[pieceIndex];
 
-      if (pos === -1) {
+      if (steps === 0) {
         // In yard — need 6 to exit
         if (state.dice !== 6) return { error: 'Need a 6 to exit yard' };
-        const startPos = this.HOME_COLS[piece.color];
-        piece.positions[pieceIndex] = startPos;
+        piece.steps[pieceIndex] = 1; // step onto start cell
+        // Capture check at start position
+        const boardPos = this._stepsToPos(piece.color, 1);
+        this._captureAt(state, playerId, boardPos);
+      } else if (steps >= this.HOME_STRETCH) {
+        return { error: 'Piece already finished' };
       } else {
-        const newPos = (pos + state.dice) % 52;
-        // Check if reached home column (simplified: 56 = home)
-        if (pos + state.dice >= 56) {
-          piece.positions[pieceIndex] = 56; // home!
-        } else {
-          // Capture check
-          Object.entries(state.pieces).forEach(([pid, p]) => {
-            if (pid !== playerId) {
-              p.positions.forEach((pp, i) => {
-                if (pp === newPos && !this.SAFE_CELLS.includes(newPos)) {
-                  p.positions[i] = -1; // send home
-                }
-              });
-            }
-          });
-          piece.positions[pieceIndex] = newPos;
+        const newSteps = steps + state.dice;
+        if (newSteps > this.HOME_STRETCH) return { error: 'Would overshoot home' };
+        piece.steps[pieceIndex] = newSteps;
+
+        // Capture check only if on the shared track (not home stretch)
+        if (newSteps <= this.TRACK_SIZE) {
+          const boardPos = this._stepsToPos(piece.color, newSteps);
+          this._captureAt(state, playerId, boardPos);
         }
       }
 
-      // Check winner
-      if (piece.positions.every(p => p === 56)) {
+      // Check winner — all 4 pieces finished
+      if (piece.steps.every(s => s >= this.HOME_STRETCH)) {
         state.winner = playerId;
-        return { state, gameOver: true, winner: playerId };
+        return { state: this._serializeState(state), gameOver: true, winner: playerId };
       }
 
       // Extra turn on 6
@@ -443,7 +652,41 @@ const Homerun = {
       }
     }
 
-    return { state };
+    return { state: this._serializeState(state) };
+  },
+
+  _captureAt(state, playerId, boardPos) {
+    if (this.SAFE_CELLS.includes(boardPos)) return;
+    Object.entries(state.pieces).forEach(([pid, p]) => {
+      if (pid !== playerId) {
+        p.steps.forEach((s, i) => {
+          if (s > 0 && s <= this.TRACK_SIZE) {
+            const otherPos = this._stepsToPos(p.color, s);
+            if (otherPos === boardPos) {
+              p.steps[i] = 0; // send back to yard
+            }
+          }
+        });
+      }
+    });
+  },
+
+  _serializeState(state) {
+    // Convert steps to board positions for the client to render
+    const positions = {};
+    Object.entries(state.pieces).forEach(([pid, piece]) => {
+      positions[pid] = {
+        color: piece.color,
+        steps: piece.steps,
+        positions: piece.steps.map(s => {
+          if (s === 0) return -1; // in yard
+          if (s >= this.HOME_STRETCH) return 56; // finished
+          if (s > this.TRACK_SIZE) return 52 + (s - this.TRACK_SIZE); // home stretch
+          return this._stepsToPos(piece.color, s);
+        })
+      };
+    });
+    return { ...state, pieces: positions };
   },
 
   reset(players) { return this.init(players); }
@@ -533,8 +776,9 @@ class GameStateManager {
     if (!entry) return { error: 'Game not found' };
     const handler = handlers[entry.gameId];
     if (!handler) return { error: 'Unknown game' };
+    // Handlers mutate entry.state in place and return a serialized copy for clients.
+    // We never overwrite entry.state with the serialized version.
     const result = handler.processMove(entry.state, playerId, move);
-    if (!result.error) entry.state = result.state || entry.state;
     return result;
   }
 
@@ -547,6 +791,16 @@ class GameStateManager {
 
   getState(roomId) {
     return this.states.get(roomId)?.state || null;
+  }
+
+  getPlayerState(roomId, playerId) {
+    const entry = this.states.get(roomId);
+    if (!entry) return null;
+    // For Shadow Court, add the player's own role
+    if (entry.gameId === 'shadow_court' && entry.state.assignments) {
+      return { ...entry.state, myRole: entry.state.assignments[playerId], assignments: undefined };
+    }
+    return entry.state;
   }
 }
 

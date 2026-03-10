@@ -234,12 +234,16 @@ window.GameRenderer = (() => {
     const myPiece = Object.entries(state.pieces || {}).find(([pid]) => pid === session.playerId)?.[1];
     if (!myPiece) return;
 
+    const positions = myPiece.positions || [];
+    const steps = myPiece.steps || [];
+
     wrap.innerHTML = '<div style="font-family:var(--font-head);font-size:12px;color:var(--text-dim);letter-spacing:2px;width:100%;text-align:center">SELECT PIECE TO MOVE</div>';
 
-    myPiece.positions.forEach((pos, i) => {
+    positions.forEach((pos, i) => {
       const btn = document.createElement('button');
       btn.className = 'btn-secondary';
-      const canMove = pos === -1 ? state.dice === 6 : pos !== 56;
+      const s = steps[i] || 0;
+      const canMove = pos === -1 ? state.dice === 6 : (pos !== 56 && s + state.dice <= 57);
       btn.textContent = `Piece ${i+1} (${pos === -1 ? 'Yard' : pos === 56 ? 'Home ✓' : `pos ${pos}`})`;
       btn.disabled = !canMove;
       btn.style.opacity = canMove ? 1 : .3;

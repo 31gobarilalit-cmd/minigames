@@ -183,13 +183,39 @@ window.GameRenderer = (() => {
     bar.innerHTML = '';
     if (!isMyTurn) { bar.innerHTML = '<div style="color:var(--text-dim);font-family:var(--font-head);font-size:13px;letter-spacing:1px">⏳ Waiting for opponent…</div>'; return; }
 
+    // Setup phase: only settlement + road placement (free)
+    if (state?.phase === 'setup') {
+      const setupActions = [
+        { label:'🏠 Place Settlement (free)', action:'build_settlement' },
+        { label:'🛤️ Place Road (free)', action:'build_road' },
+      ];
+      setupActions.forEach(({ label, action }) => {
+        const btn = document.createElement('button');
+        btn.className = 'action-btn';
+        btn.textContent = label;
+        btn.onclick = () => {
+          if (action === 'build_settlement') {
+            const v = prompt('Enter vertex number (0-53):');
+            if (v !== null) sendMove({ action, vertex: parseInt(v) });
+          } else {
+            const e = prompt('Enter edge number (0-71):');
+            if (e !== null) sendMove({ action, edge: parseInt(e) });
+          }
+        };
+        bar.appendChild(btn);
+      });
+      return;
+    }
+
+    // Main phase actions
+    const diceRolled = state?.diceRolled;
     const actions = [
-      { label:`🎲 Roll Dice`, action:'roll_dice', cost:{}, disabled: state?.phase_action === 'move_robber' },
-      { label:`🏠 Settlement`, action:'build_settlement', cost:{wood:1,brick:1,wheat:1,sheep:1} },
-      { label:`🏙️ City`,       action:'build_city',       cost:{ore:3,wheat:2} },
-      { label:`🛤️ Road`,       action:'build_road',       cost:{wood:1,brick:1} },
-      { label:`🔄 Trade 4:1`, action:'trade',             cost:{} },
-      { label:`⏩ End Turn`,   action:'end_turn',         cost:{} },
+      { label:'🎲 Roll Dice', action:'roll_dice', cost:{}, disabled: diceRolled || state?.phase_action === 'move_robber' },
+      { label:'🏠 Settlement', action:'build_settlement', cost:{wood:1,brick:1,wheat:1,sheep:1}, disabled: !diceRolled },
+      { label:'🏙️ City',       action:'build_city',       cost:{ore:3,wheat:2}, disabled: !diceRolled },
+      { label:'🛤️ Road',       action:'build_road',       cost:{wood:1,brick:1}, disabled: !diceRolled },
+      { label:'🔄 Trade 4:1', action:'trade',             cost:{}, disabled: !diceRolled },
+      { label:'⏩ End Turn',   action:'end_turn',         cost:{}, disabled: !diceRolled },
     ];
 
     actions.forEach(({ label, action, cost, disabled }) => {
@@ -197,7 +223,8 @@ window.GameRenderer = (() => {
       btn.className = 'action-btn';
       btn.textContent = label;
       btn.disabled = disabled;
-      btn.style.opacity = disabled || (!Object.keys(cost).length ? 1 : canAfford(cost) ? 1 : .4);
+      const affordable = !Object.keys(cost).length || canAfford(cost);
+      btn.style.opacity = disabled ? .3 : (affordable ? 1 : .4);
       btn.onclick = () => {
         if (action === 'trade') {
           const give    = prompt('Give resource (wood/brick/wheat/sheep/ore):');
@@ -221,7 +248,11 @@ window.GameRenderer = (() => {
     const el = document.getElementById('realmInfo');
     if (!state) return;
     const isMyTurn = state.currentTurn === session.playerId;
-    el.textContent = isMyTurn ? '⚡ Your turn!' : '⏳ Opponent\'s turn…';
+    if (state.phase === 'setup') {
+      el.textContent = isMyTurn ? '⚡ Setup: Place a settlement and a road (free)' : '⏳ Setup: Waiting for opponent…';
+    } else {
+      el.textContent = isMyTurn ? '⚡ Your turn! Roll dice first.' : '⏳ Opponent\'s turn…';
+    }
   }
 
   function reset() { state = null; myPlayer = null; drawBoard(); }
